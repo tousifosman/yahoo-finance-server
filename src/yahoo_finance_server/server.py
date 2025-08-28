@@ -1,11 +1,14 @@
 import asyncio
 import json
+import argparse
+import sys
 
 from mcp.server.models import InitializationOptions
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
 from pydantic import AnyUrl
 import mcp.server.stdio
+import mcp.server.sse
 
 # Import helper functions for Yahoo Finance functionality
 from .helper import (
@@ -16,6 +19,8 @@ from .helper import (
     get_price_history,
     get_ticker_option_chain,
     get_ticker_earnings,
+    get_ticker_filings,
+    get_filing_content,
 )
 
 # Initialize the MCP server
@@ -257,6 +262,40 @@ async def handle_list_tools() -> list[types.Tool]:
                 "required": ["symbol"],
             },
         ),
+        types.Tool(
+            name="get-sec-filings",
+            description="Retrieve recent SEC filings for a stock symbol including 10-K, 10-Q, 8-K and other regulatory filings with document details and links",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol to get SEC filings for",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of SEC filings to fetch (default: 100)",
+                        "default": 100,
+                        "minimum": 1,
+                    },
+                },
+                "required": ["symbol"],
+            },
+        ),
+        types.Tool(
+            name="get-filing-content",
+            description="Download and retrieve the full content of a specific SEC filing document by URL",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL of the SEC filing document to download (obtained from get-sec-filings tool)",
+                    },
+                },
+                "required": ["url"],
+            },
+        ),
     ]
 
 
@@ -281,6 +320,10 @@ async def handle_call_tool(
         return await _handle_ticker_option_chain(arguments)
     elif name == "ticker-earning":
         return await _handle_ticker_earning(arguments)
+    elif name == "get-sec-filings":
+        return await _handle_get_sec_filings(arguments)
+    elif name == "get-filing-content":
+        return await _handle_get_filing_content(arguments)
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -639,19 +682,300 @@ async def _handle_ticker_earning(arguments: dict | None) -> list[types.TextConte
         ]
 
 
+async def _handle_get_sec_filings(arguments: dict | None) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    """
+    Handle get-sec-filings tool execution.
+    """
+    if not arguments or not arguments.get("symbol"):
+        raise ValueError("Symbol is required for SEC filings retrieval")
+
+    try:
+        symbol = arguments["symbol"].upper()
+        count = arguments.get("count", 10)
+
+        filings_data = await get_ticker_filings(symbol, count)
+
+        if filings_data.get("error"):
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"❌ Error retrieving SEC filings: {filings_data['error']}",
+                )
+            ]
+
+        if not filings_data.get("filings"):
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"📋 No SEC filings found for {symbol}",
+                )
+            ]
+
+        # Format the response nicely
+        filings_text = f"""📋 **SEC Filings for {symbol}** ({filings_data['filings_count']} filings)
+
+"""
+
+        for i, filing in enumerate(filings_data["filings"], 1):
+            filing_date = filing.get("date") or filing.get("filing_date", "")
+            acceptance_date = filing.get("acceptance_date", "")
+            report_date = filing.get("report_date", "")
+            edgar_url = filing.get("edgar_url", "")
+            
+            date_info = f"📅 **Date:** {filing_date}"
+            if acceptance_date:
+                date_info += f" | **Accepted:** {acceptance_date}"
+            if report_date:
+                date_info += f" | **Report Date:** {report_date}"
+            
+            # Handle exhibits - show all available documents (URLs only, no content)
+            exhibits_info = ""
+            if filing.get("exhibits") and len(filing["exhibits"]) > 0:
+                exhibits_info = f"\n📄 **Documents ({filing.get('total_exhibits', 0)}):**"
+                for exhibit in filing["exhibits"]:
+                    exhibits_info += f"\n  • **{exhibit['exhibit_type']}**: {exhibit['url']}"
+            elif edgar_url:
+                exhibits_info = f"\n🔗 **EDGAR Link:** {edgar_url}"
+            elif filing.get("url"):
+                exhibits_info = f"\n🔗 **Document Link:** {filing['url']}"
+                
+            # Add note about content retrieval
+            if filing.get("exhibits") and len(filing["exhibits"]) > 0:
+                exhibits_info += f"\n💡 **Note:** Use get-filing-content tool with URLs above to retrieve document content"
+
+            filings_text += f"""**{i}. {filing['type']}**
+📝 **Title:** {filing.get('title', 'N/A')}
+{date_info}{exhibits_info}
+
+"""
+
+        # Return the main summary as text, but we could extend this to return
+        # individual documents as EmbeddedResource for binary content
+        results = [
+            types.TextContent(
+                type="text",
+                text=filings_text,
+            )
+        ]
+        
+        # Optionally, we could add individual documents as embedded resources
+        # for direct access to file content (especially for PDFs, images, etc.)
+        # This would allow tools to access the raw file content directly
+        for filing in filings_data["filings"]:
+            for exhibit in filing.get("exhibits", []):
+                if exhibit.get("content") and not exhibit.get("error"):
+                    # For binary content (PDFs, etc.), we could add as EmbeddedResource
+                    if exhibit.get("content_type") in ["application/pdf", "image/png", "image/jpeg"]:
+                        # Note: This would require the content to be properly formatted
+                        # For now, keeping as text summary, but structure is ready for expansion
+                        pass
+        
+        return results
+
+    except Exception as e:
+        return [
+            types.TextContent(
+                type="text",
+                text=f"❌ Error retrieving SEC filings for {arguments.get('symbol', 'unknown')}: {str(e)}",
+            )
+        ]
+
+
+async def _handle_get_filing_content(arguments: dict | None) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    """
+    Handle get-filing-content tool execution.
+    """
+    if not arguments or not arguments.get("url"):
+        raise ValueError("URL is required for filing content retrieval")
+
+    try:
+        url = arguments["url"]
+        
+        content_data = await get_filing_content(url)
+        
+        if content_data.get("error"):
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"❌ Error retrieving filing content: {content_data['error']}",
+                )
+            ]
+        
+        # Format the response with content info and preview
+        content_text = f"""📄 **SEC Filing Content**
+🔗 **URL:** {content_data['url']}
+📊 **Content Type:** {content_data['content_type']}
+📏 **Size:** {content_data['size']} bytes
+✅ **Status:** {content_data['status']}
+
+"""
+        
+        # Add content based on type and size
+        if content_data.get("content"):
+            content = content_data["content"]
+            
+            if content_data["content_type"].startswith("text/") or "xml" in content_data["content_type"]:
+                # For text content, show the full content
+                content_text += f"""**📋 Content:**
+```
+{content}
+```"""
+            elif content_data["content_type"] == "application/pdf":
+                # For PDF, show that it's base64 encoded
+                content_text += f"""**📋 Content:** PDF document (base64 encoded)
+**💡 Note:** This is a PDF file encoded in base64 format. The content can be decoded and saved as a PDF file.
+
+**🔍 Base64 Content Preview:**
+```
+{content[:500]}...
+```"""
+            else:
+                # For other binary content
+                content_text += f"""**📋 Content:** Binary file (base64 encoded)
+**💡 Note:** This is a binary file encoded in base64 format.
+
+**🔍 Base64 Content Preview:**
+```
+{content[:500]}...
+```"""
+        
+        return [
+            types.TextContent(
+                type="text",
+                text=content_text,
+            )
+        ]
+
+    except Exception as e:
+        return [
+            types.TextContent(
+                type="text",
+                text=f"❌ Error retrieving filing content for {arguments.get('url', 'unknown')}: {str(e)}",
+            )
+        ]
+
+
 async def main():
     """Main entry point for the Yahoo Finance MCP server."""
-    # Use stdio transport for MCP communication
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="yahoo-finance-server",
-                server_version="0.1.0",
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
-        )
+    parser = argparse.ArgumentParser(description="Yahoo Finance MCP Server")
+    parser.add_argument(
+        "--transport", 
+        choices=["stdio", "http"], 
+        default="stdio",
+        help="Transport method (stdio or http)"
+    )
+    parser.add_argument(
+        "--host",
+        default="localhost",
+        help="Host for HTTP server (default: localhost)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=3000,
+        help="Port for HTTP server (default: 3000)"
+    )
+    
+    args = parser.parse_args()
+    
+    init_options = InitializationOptions(
+        server_name="yahoo-finance-server",
+        server_version="0.1.0",
+        capabilities=server.get_capabilities(
+            notification_options=NotificationOptions(),
+            experimental_capabilities={},
+        ),
+    )
+    
+    if args.transport == "http":
+        print(f"Starting Yahoo Finance MCP Server with HTTP transport on http://{args.host}:{args.port}")
+        print(f"Inspector URL: http://{args.host}:{args.port}")
+        
+        try:
+            # Use FastMCP for HTTP/StreamableHttp setup
+            from mcp.server.fastmcp import FastMCP
+            import uvicorn
+            
+            # Create FastMCP server with HTTP transport (replaces deprecated SSE)
+            fastmcp_server = FastMCP(
+                name="yahoo-finance-server",
+                host=args.host,
+                port=args.port,
+                # Use streamable_http instead of deprecated sse
+                streamable_http_path="/",
+                json_response=False  # Use MCP format instead of JSON
+            )
+            
+            # Register all our tools with FastMCP
+            @fastmcp_server.tool()
+            async def get_ticker_info(symbol: str) -> str:
+                """Get comprehensive stock information"""
+                from .helper import get_ticker_info as helper_get_ticker_info
+                return await helper_get_ticker_info(symbol)
+                
+            @fastmcp_server.tool()
+            async def get_ticker_news(symbol: str, count: int = 10) -> dict:
+                """Get recent news for a stock symbol"""
+                from .helper import get_ticker_news as helper_get_ticker_news
+                return await helper_get_ticker_news(symbol, count)
+                
+            @fastmcp_server.tool()
+            async def search(query: str, count: int = 10) -> dict:
+                """Search Yahoo Finance for stocks and instruments"""
+                from .helper import search_yahoo_finance
+                return await search_yahoo_finance(query, count)
+                
+            @fastmcp_server.tool()
+            async def get_top_entities(entity_type: str, sector: str = "", count: int = 10) -> dict:
+                """Get top entities in a sector"""
+                from .helper import get_top_entities as helper_get_top_entities
+                return await helper_get_top_entities(entity_type, sector, count)
+                
+            @fastmcp_server.tool()
+            async def get_price_history(symbol: str, period: str = "1y", interval: str = "1d") -> dict:
+                """Get historical price data"""
+                from .helper import get_price_history as helper_get_price_history
+                return await helper_get_price_history(symbol, period, interval)
+                
+            @fastmcp_server.tool()
+            async def ticker_option_chain(symbol: str, option_type: str = "both", date: str = None) -> dict:
+                """Get option chain data"""
+                from .helper import get_ticker_option_chain
+                return await get_ticker_option_chain(symbol, option_type, date)
+                
+            @fastmcp_server.tool()
+            async def ticker_earning(symbol: str, period: str = "annual", date: str = None) -> dict:
+                """Get earnings data"""
+                from .helper import get_ticker_earnings
+                return await get_ticker_earnings(symbol, period, date)
+                
+            @fastmcp_server.tool()
+            async def get_sec_filings(symbol: str, count: int = 100) -> dict:
+                """Get SEC filings for a stock symbol"""
+                from .helper import get_ticker_filings
+                return await get_ticker_filings(symbol, count)
+            
+            @fastmcp_server.tool()
+            async def get_filing_content(url: str) -> dict:
+                """Download and retrieve the full content of a specific SEC filing document by URL"""
+                from .helper import get_filing_content as helper_get_filing_content
+                return await helper_get_filing_content(url)
+            
+            # Get the ASGI app from FastMCP
+            app = fastmcp_server.streamable_http_app()
+            
+            # Run the server using async approach
+            config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
+            server_instance = uvicorn.Server(config)
+            await server_instance.serve()
+            
+        except ImportError as e:
+            print(f"❌ HTTP transport dependencies not available: {e}")
+            print("Install required dependencies: pip install uvicorn starlette")
+            print("Or use stdio transport: python -m src.yahoo_finance_server --transport stdio")
+            return
+    else:
+        print("Starting Yahoo Finance MCP Server with stdio transport")
+        # Use stdio transport for MCP communication
+        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, init_options)

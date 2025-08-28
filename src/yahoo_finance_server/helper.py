@@ -1099,6 +1099,241 @@ async def get_ticker_earnings(
         raise Exception(f"Failed to get earnings data: {str(e)}")
 
 
+def _download_filing_content(url: str) -> Dict[str, Any]:
+    """
+    Download content from SEC filing URL.
+    
+    Args:
+        url: URL of the SEC filing document
+        
+    Returns:
+        Dictionary containing content, content_type, size, and any error info
+    """
+    try:
+        session = _get_enhanced_session()
+        
+        # Set headers to appear as a browser
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+        
+        response = session.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        content_type = response.headers.get('content-type', 'text/plain').split(';')[0]
+        content_size = len(response.content)
+        
+        # Handle different content types
+        if 'text/' in content_type or 'application/xml' in content_type:
+            # Text-based content (HTML, XML, plain text)
+            content = response.text
+        elif 'application/pdf' in content_type:
+            # PDF content - return as base64 for now
+            import base64
+            content = base64.b64encode(response.content).decode('utf-8')
+        else:
+            # Other binary content
+            import base64
+            content = base64.b64encode(response.content).decode('utf-8')
+        
+        return {
+            "content": content,
+            "content_type": content_type,
+            "size": content_size,
+            "status": "success"
+        }
+        
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Failed to download filing content from {url}: {e}")
+        return {
+            "content": "",
+            "content_type": "text/plain",
+            "size": 0,
+            "error": f"Download failed: {str(e)}",
+            "status": "error"
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error downloading filing content from {url}: {e}")
+        return {
+            "content": "",
+            "content_type": "text/plain", 
+            "size": 0,
+            "error": f"Unexpected error: {str(e)}",
+            "status": "error"
+        }
+
+
+async def get_filing_content(url: str) -> Dict[str, Any]:
+    """
+    Download and return the content of a specific SEC filing document.
+    
+    Args:
+        url: URL of the SEC filing document to download
+        
+    Returns:
+        Dictionary containing the file content, content type, size, and metadata
+    """
+    try:
+        def _get_content():
+            if not url:
+                return {
+                    "url": url,
+                    "error": "URL is required",
+                    "content": "",
+                    "content_type": "text/plain",
+                    "size": 0,
+                    "status": "error"
+                }
+            
+            # Download the filing content
+            content_result = _download_filing_content(url)
+            
+            return {
+                "url": url,
+                "content": content_result["content"],
+                "content_type": content_result["content_type"], 
+                "size": content_result["size"],
+                "status": content_result["status"],
+                "error": content_result.get("error", "")
+            }
+        
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        content_data = await loop.run_in_executor(None, _get_content)
+        
+        return content_data
+        
+    except Exception as e:
+        logger.error(f"Error getting filing content from {url}: {e}")
+        return {
+            "url": url,
+            "error": f"Failed to get filing content: {str(e)}",
+            "content": "",
+            "content_type": "text/plain",
+            "size": 0,
+            "status": "error"
+        }
+
+
+async def get_ticker_filings(symbol: str, count: int = 100) -> Dict[str, Any]:
+    """
+    Get SEC filings for a stock symbol using yfinance get_sec_filings method.
+
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL', 'GOOGL')
+        count: Number of filings to retrieve (default: 100)
+
+    Returns:
+        Dictionary containing SEC filings data
+    """
+    try:
+
+        def _get_filings():
+            ticker = _create_enhanced_ticker(symbol)
+
+            try:
+                # Get SEC filings using yfinance method
+                filings = ticker.get_sec_filings()
+                
+                if not filings:
+                    logger.debug(f"No SEC filings found for {symbol}")
+                    return {
+                        "symbol": symbol,
+                        "filings_count": 0,
+                        "filings": [],
+                    }
+
+                # Process the filings data
+                processed_filings = []
+                
+                # Limit to requested count
+                filings_limited = filings[:count] if len(filings) > count else filings
+                
+                for filing in filings_limited:
+                    # Handle exhibits - get all exhibit types without downloading content
+                    exhibits_data = filing.get("exhibits", {})
+                    all_exhibits = []
+                    
+                    if isinstance(exhibits_data, dict) and exhibits_data:
+                        # Collect exhibit metadata only (no content download)
+                        for exhibit_type, url in exhibits_data.items():
+                            if url:  # Only include non-empty URLs
+                                all_exhibits.append({
+                                    "exhibit_type": exhibit_type,
+                                    "url": url
+                                })
+                    
+                    filing_data = {
+                        "type": filing.get("type", ""),
+                        "date": (
+                            filing.get("date").strftime("%Y-%m-%d")
+                            if pd.notna(filing.get("date"))
+                            else ""
+                        ),
+                        "title": filing.get("title", ""),
+                        "url": all_exhibits[0]["url"] if all_exhibits else "",  # First URL for backward compatibility
+                        "exhibits": all_exhibits,  # All exhibits with URLs only
+                        "total_exhibits": len(all_exhibits),
+                    }
+                    
+                    # Handle different column names that might exist
+                    if "filingDate" in filing:
+                        filing_data["filing_date"] = (
+                            filing["filingDate"].strftime("%Y-%m-%d")
+                            if pd.notna(filing["filingDate"])
+                            else ""
+                        )
+                    
+                    if "acceptanceDate" in filing:
+                        filing_data["acceptance_date"] = (
+                            filing["acceptanceDate"].strftime("%Y-%m-%d %H:%M:%S")
+                            if pd.notna(filing["acceptanceDate"])
+                            else ""
+                        )
+                    
+                    if "reportDate" in filing:
+                        filing_data["report_date"] = (
+                            filing["reportDate"].strftime("%Y-%m-%d")
+                            if pd.notna(filing["reportDate"])
+                            else ""
+                        )
+                    
+                    if "edgarUrl" in filing:
+                        filing_data["edgar_url"] = filing.get("edgarUrl", "")
+                    
+                    processed_filings.append(filing_data)
+
+                return {
+                    "symbol": symbol,
+                    "filings_count": len(processed_filings),
+                    "filings": processed_filings,
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to get SEC filings for {symbol}: {e}")
+                return {
+                    "symbol": symbol,
+                    "error": f"Unable to fetch SEC filings: {str(e)}",
+                    "filings_count": 0,
+                    "filings": [],
+                }
+
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        filings_data = await loop.run_in_executor(None, _get_filings)
+
+        return filings_data
+
+    except Exception as e:
+        logger.error(f"Error getting SEC filings for {symbol}: {e}")
+        raise Exception(f"Failed to get SEC filings: {str(e)}")
+
+
 def _create_enhanced_ticker(symbol: str):
     """
     Create a yfinance Ticker object with enhanced session configuration.
