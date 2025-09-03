@@ -533,7 +533,7 @@ async def search_yahoo_finance(query: str, count: int = 10) -> Dict[str, Any]:
         raise Exception(f"Failed to search Yahoo Finance: {str(e)}")
 
 
-sectors = Literal[
+Sectors = Literal[
     "basic-materials",
     "communication-services",
     "consumer-cyclical",
@@ -548,7 +548,7 @@ sectors = Literal[
 ]
 
 
-def get_top_etfs(sector: sectors, count: int = 10) -> str:
+def get_top_etfs(sector: Sectors, count: int = 10) -> str:
     """Get top ETFs for a certain sector."""
     if count < 1:
         return "count must be greater than 0"
@@ -560,7 +560,7 @@ def get_top_etfs(sector: sectors, count: int = 10) -> str:
     return "\n".join(result[:count])
 
 
-def get_top_mutual_funds(sector: sectors, count: int = 10) -> str:
+def get_top_mutual_funds(sector: Sectors, count: int = 10) -> str:
     """Retrieve popular mutual funds for a sector, returned as a list in 'SYMBOL: Fund Name' format."""
     if count < 1:
         return "count must be greater than 0"
@@ -569,7 +569,7 @@ def get_top_mutual_funds(sector: sectors, count: int = 10) -> str:
     return "\n".join(f"{symbol}: {name}" for symbol, name in s.top_mutual_funds.items())
 
 
-def get_top_companies(sector: sectors, count: int = 10) -> str:
+def get_top_companies(sector: Sectors, count: int = 10) -> str:
     """Get top companies in a sector with name, analyst rating, and market weight as JSON array."""
     if count < 1:
         return "count must be greater than 0"
@@ -582,7 +582,7 @@ def get_top_companies(sector: sectors, count: int = 10) -> str:
     return df.iloc[:count].to_json(orient="records")
 
 
-def get_top_growth_companies(sector: sectors, count: int = 10) -> str:
+def get_top_growth_companies(sector: Sectors, count: int = 10) -> str:
     """Get top growth companies grouped by industry within a sector as JSON array with growth metrics."""
     if count < 1:
         return "count must be greater than 0"
@@ -605,7 +605,7 @@ def get_top_growth_companies(sector: sectors, count: int = 10) -> str:
     return json.dumps(results, ensure_ascii=False)
 
 
-def get_top_performing_companies(sector: sectors, count: int = 10) -> str:
+def get_top_performing_companies(sector: Sectors, count: int = 10) -> str:
     """Get top performing companies grouped by industry within a sector as JSON array with performance metrics."""
     if count < 1:
         return "count must be greater than 0"
@@ -632,7 +632,7 @@ async def get_top_entities(
     entity_type: Literal[
         "etfs", "mutual_funds", "companies", "growth_companies", "performing_companies"
     ],
-    sector: sectors,
+    sector: Sectors,
     count: int = 10,
 ) -> Dict[str, Any]:
     """

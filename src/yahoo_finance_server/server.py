@@ -1,14 +1,11 @@
-import asyncio
 import json
 import argparse
-import sys
-
-from mcp.server.models import InitializationOptions
 import mcp.types as types
-from mcp.server import NotificationOptions, Server
-from pydantic import AnyUrl
-import mcp.server.stdio
-import mcp.server.sse
+
+from mcp.server.fastmcp import FastMCP
+from pydantic import Field
+from typing import Annotated, Literal
+
 
 # Import helper functions for Yahoo Finance functionality
 from .helper import (
@@ -21,322 +18,26 @@ from .helper import (
     get_ticker_earnings,
     get_ticker_filings,
     get_filing_content,
+    Sectors
 )
 
-# Initialize the MCP server
-server = Server("yahoo_finance_server")
+mcp = FastMCP(
+    name="yahoo-finance-server",
+    json_response=False  # Use MCP format instead of JSON
+)
 
-
-@server.list_resources()
-async def handle_list_resources() -> list[types.Resource]:
-    """
-    List available resources.
-    Currently no resources are exposed by this server.
-    """
-    return []
-
-
-@server.read_resource()
-async def handle_read_resource(uri: AnyUrl) -> str:
-    """
-    Read a specific resource by its URI.
-    Currently no resources are supported.
-    """
-    raise ValueError(f"Unsupported resource URI: {uri}")
-
-
-@server.list_prompts()
-async def handle_list_prompts() -> list[types.Prompt]:
-    """
-    List available prompts.
-    Currently no prompts are exposed by this server.
-    """
-    return []
-
-
-@server.get_prompt()
-async def handle_get_prompt(
-    name: str, arguments: dict[str, str] | None
-) -> types.GetPromptResult:
-    """
-    Generate a prompt by name.
-    Currently no prompts are supported.
-    """
-    raise ValueError(f"Unknown prompt: {name}")
-
-
-@server.list_tools()
-async def handle_list_tools() -> list[types.Tool]:
-    """
-    List available Yahoo Finance tools.
-    """
-    return [
-        types.Tool(
-            name="get-ticker-info",
-            description="Retrieve comprehensive stock data including company info, financials, trading metrics and governance data",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker symbol (e.g., 'AAPL', 'GOOGL', 'TSLA')",
-                    }
-                },
-                "required": ["symbol"],
-            },
-        ),
-        types.Tool(
-            name="get-ticker-news",
-            description="Fetch recent news articles related to a specific stock symbol with title, content, and source details",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker symbol to get news for",
-                    },
-                    "count": {
-                        "type": "integer",
-                        "description": "Number of news articles to fetch (default: 10, maximum: 50)",
-                        "default": 10,
-                        "minimum": 1,
-                        "maximum": 50,
-                    },
-                },
-                "required": ["symbol"],
-            },
-        ),
-        types.Tool(
-            name="search",
-            description="Search Yahoo Finance for stocks, ETFs, and other financial instruments",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (company name, ticker symbol, etc.)",
-                    },
-                    "count": {
-                        "type": "integer",
-                        "description": "Number of search results to return (default: 10, maximum: 25)",
-                        "default": 10,
-                        "minimum": 1,
-                        "maximum": 25,
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
-        types.Tool(
-            name="get-top-entities",
-            description="Get top entities (ETFs, mutual funds, companies, growth companies, or performing companies) in a sector",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "entity_type": {
-                        "type": "string",
-                        "enum": [
-                            "etfs",
-                            "mutual_funds",
-                            "companies",
-                            "growth_companies",
-                            "performing_companies",
-                        ],
-                        "description": "Type of entities to retrieve",
-                    },
-                    "sector": {
-                        "type": "string",
-                        "description": "Sector name (technology, healthcare, financial, energy, consumer, industrial)",
-                        "default": "",
-                    },
-                    "count": {
-                        "type": "integer",
-                        "description": "Number of entities to return (default: 10, maximum: 20)",
-                        "default": 10,
-                        "minimum": 1,
-                        "maximum": 20,
-                    },
-                },
-                "required": ["entity_type"],
-            },
-        ),
-        types.Tool(
-            name="get-price-history",
-            description="Fetch historical price data for a given stock symbol over a specified period and interval",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker symbol",
-                    },
-                    "period": {
-                        "type": "string",
-                        "enum": [
-                            "1d",
-                            "5d",
-                            "1mo",
-                            "3mo",
-                            "6mo",
-                            "1y",
-                            "2y",
-                            "5y",
-                            "10y",
-                            "ytd",
-                            "max",
-                        ],
-                        "description": "Period to fetch data for",
-                        "default": "1y",
-                    },
-                    "interval": {
-                        "type": "string",
-                        "enum": [
-                            "1m",
-                            "2m",
-                            "5m",
-                            "15m",
-                            "30m",
-                            "60m",
-                            "90m",
-                            "1h",
-                            "1d",
-                            "5d",
-                            "1wk",
-                            "1mo",
-                            "3mo",
-                        ],
-                        "description": "Data interval",
-                        "default": "1d",
-                    },
-                },
-                "required": ["symbol"],
-            },
-        ),
-        types.Tool(
-            name="ticker-option-chain",
-            description="Get most recent or around certain date option chain data. Parameters include call or put, and date. If no date, use most recent top 10 day forward dates",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker symbol",
-                    },
-                    "option_type": {
-                        "type": "string",
-                        "enum": ["call", "put", "both"],
-                        "description": "Type of options to retrieve",
-                        "default": "both",
-                    },
-                    "date": {
-                        "type": "string",
-                        "description": "Specific expiration date in YYYY-MM-DD format. If not provided, uses most recent available dates",
-                        "default": None,
-                    },
-                },
-                "required": ["symbol"],
-            },
-        ),
-        types.Tool(
-            name="ticker-earning",
-            description="Get earnings data including annual or quarterly data, and upcoming earnings dates. Parameters include annual or quarter, and date. If no date, use most recent, also include the date of upcoming earning time if available",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker symbol",
-                    },
-                    "period": {
-                        "type": "string",
-                        "enum": ["annual", "quarterly"],
-                        "description": "Earnings period to retrieve",
-                        "default": "annual",
-                    },
-                    "date": {
-                        "type": "string",
-                        "description": "Specific date in YYYY-MM-DD format. If not provided, uses most recent data",
-                        "default": None,
-                    },
-                },
-                "required": ["symbol"],
-            },
-        ),
-        types.Tool(
-            name="get-sec-filings",
-            description="Retrieve recent SEC filings for a stock symbol including 10-K, 10-Q, 8-K and other regulatory filings with document details and links",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker symbol to get SEC filings for",
-                    },
-                    "count": {
-                        "type": "integer",
-                        "description": "Number of SEC filings to fetch (default: 100)",
-                        "default": 100,
-                        "minimum": 1,
-                    },
-                },
-                "required": ["symbol"],
-            },
-        ),
-        types.Tool(
-            name="get-filing-content",
-            description="Download and retrieve the full content of a specific SEC filing document by URL",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL of the SEC filing document to download (obtained from get-sec-filings tool)",
-                    },
-                },
-                "required": ["url"],
-            },
-        ),
-    ]
-
-
-@server.call_tool()
-async def handle_call_tool(
-    name: str, arguments: dict | None
-) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-    """
-    Handle Yahoo Finance tool execution requests.
-    """
-    if name == "get-ticker-info":
-        return await _handle_get_ticker_info(arguments)
-    elif name == "get-ticker-news":
-        return await _handle_get_ticker_news(arguments)
-    elif name == "search":
-        return await _handle_search(arguments)
-    elif name == "get-top-entities":
-        return await _handle_get_top_entities(arguments)
-    elif name == "get-price-history":
-        return await _handle_get_price_history(arguments)
-    elif name == "ticker-option-chain":
-        return await _handle_ticker_option_chain(arguments)
-    elif name == "ticker-earning":
-        return await _handle_ticker_earning(arguments)
-    elif name == "get-sec-filings":
-        return await _handle_get_sec_filings(arguments)
-    elif name == "get-filing-content":
-        return await _handle_get_filing_content(arguments)
-    else:
-        raise ValueError(f"Unknown tool: {name}")
-
-
-async def _handle_get_ticker_info(arguments: dict | None) -> list[types.TextContent]:
+@mcp.tool(
+    name="get-ticker-info",
+    description="Retrieve comprehensive stock data including company info, financials, trading metrics and governance data"
+)
+async def _handle_get_ticker_info(
+    symbol: Annotated[str, Field(description="Stock ticker symbol (e.g., 'AAPL', 'GOOGL', 'TSLA')")]
+) -> list[types.TextContent]:
     """
     Handle get-ticker-info tool execution using only fast_info fields.
     """
-    if not arguments or not arguments.get("symbol"):
-        raise ValueError("Symbol is required for ticker info retrieval")
-
     try:
-        symbol = arguments["symbol"].upper()
+        symbol = symbol.upper()
         ticker_info = await get_ticker_info(symbol)
 
         # ticker_info is already a JSON string from helper.py
@@ -349,7 +50,7 @@ async def _handle_get_ticker_info(arguments: dict | None) -> list[types.TextCont
 
     except Exception as e:
         error_response = json.dumps(
-            {"symbol": arguments.get("symbol", "unknown"), "error": str(e)}
+            {"symbol": symbol, "error": str(e)}
         )
         return [
             types.TextContent(
@@ -359,16 +60,19 @@ async def _handle_get_ticker_info(arguments: dict | None) -> list[types.TextCont
         ]
 
 
-async def _handle_get_ticker_news(arguments: dict | None) -> list[types.TextContent]:
+@mcp.tool(
+    name="get-ticker-news",
+    description="Fetch recent news articles related to a specific stock symbol with title, content, and source details"
+)
+async def _handle_get_ticker_news(
+    symbol: Annotated[str, Field(description="Stock ticker symbol to get news for")],
+    count: Annotated[int, Field(description="Number of news articles to fetch (default: 10, maximum: 50)", ge=1, le=50)] = 10
+) -> list[types.TextContent]:
     """
     Handle get-ticker-news tool execution.
     """
-    if not arguments or not arguments.get("symbol"):
-        raise ValueError("Symbol is required for news retrieval")
-
     try:
-        symbol = arguments["symbol"].upper()
-        count = arguments.get("count", 10)
+        symbol = symbol.upper()
 
         news_data = await get_ticker_news(symbol, count)
 
@@ -409,21 +113,23 @@ async def _handle_get_ticker_news(arguments: dict | None) -> list[types.TextCont
         return [
             types.TextContent(
                 type="text",
-                text=f"❌ Error retrieving news for {arguments.get('symbol', 'unknown')}: {str(e)}",
+                text=f"❌ Error retrieving news for {symbol}: {str(e)}",
             )
         ]
 
 
-async def _handle_search(arguments: dict | None) -> list[types.TextContent]:
+@mcp.tool(
+    name="search",
+    description="Search Yahoo Finance for stocks, ETFs, and other financial instruments"
+)
+async def _handle_search(
+    query: Annotated[str, Field(description="Search query (company name, ticker symbol, etc.)")],
+    count: Annotated[int, Field(description="Number of search results to return (default: 10, maximum: 25)", ge=1, le=25)] = 10
+) -> list[types.TextContent]:
     """
     Handle search tool execution.
     """
-    if not arguments or not arguments.get("query"):
-        raise ValueError("Query is required for search")
-
     try:
-        query = arguments["query"]
-        count = arguments.get("count", 10)
 
         search_data = await search_yahoo_finance(query, count)
 
@@ -446,22 +152,24 @@ async def _handle_search(arguments: dict | None) -> list[types.TextContent]:
         return [
             types.TextContent(
                 type="text",
-                text=f"❌ Error searching for '{arguments.get('query', 'unknown')}': {str(e)}",
+                text=f"❌ Error searching for '{query}': {str(e)}",
             )
         ]
 
 
-async def _handle_get_top_entities(arguments: dict | None) -> list[types.TextContent]:
+@mcp.tool(
+    name="get-top-entities",
+    description="Get top entities (ETFs, mutual funds, companies, growth companies, or performing companies) in a sector"
+)
+async def _handle_get_top_entities(
+    entity_type: Annotated[Literal["etfs", "mutual_funds", "companies", "growth_companies", "performing_companies"], Field(description="Type of entities to retrieve")],
+    sector: Annotated[Sectors, Field(description=f"Sector name {Sectors.__args__}")],
+    count: Annotated[int, Field(description="Number of entities to return (default: 10, maximum: 20)", ge=1, le=20)] = 10
+) -> list[types.TextContent]:
     """
     Handle get-top-entities tool execution.
     """
-    if not arguments or not arguments.get("entity_type"):
-        raise ValueError("Entity type is required")
-
     try:
-        entity_type = arguments["entity_type"]
-        sector = arguments.get("sector", "")
-        count = arguments.get("count", 10)
 
         entities_data = await get_top_entities(entity_type, sector, count)
 
@@ -489,17 +197,20 @@ async def _handle_get_top_entities(arguments: dict | None) -> list[types.TextCon
         ]
 
 
-async def _handle_get_price_history(arguments: dict | None) -> list[types.TextContent]:
+@mcp.tool(
+    name="get-price-history",
+    description="Fetch historical price data for a given stock symbol over a specified period and interval"
+)
+async def _handle_get_price_history(
+    symbol: Annotated[str, Field(description="Stock ticker symbol")],
+    period: Annotated[Literal["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"], Field(description="Period to fetch data for")] = "1y",
+    interval: Annotated[Literal["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"], Field(description="Data interval")] = "1d"
+) -> list[types.TextContent]:
     """
     Handle get-price-history tool execution.
     """
-    if not arguments or not arguments.get("symbol"):
-        raise ValueError("Symbol is required for price history")
-
     try:
-        symbol = arguments["symbol"].upper()
-        period = arguments.get("period", "1y")
-        interval = arguments.get("interval", "1d")
+        symbol = symbol.upper()
 
         history_data = await get_price_history(symbol, period, interval)
 
@@ -549,24 +260,25 @@ async def _handle_get_price_history(arguments: dict | None) -> list[types.TextCo
         return [
             types.TextContent(
                 type="text",
-                text=f"❌ Error retrieving price history for {arguments.get('symbol', 'unknown')}: {str(e)}",
+                text=f"❌ Error retrieving price history for {symbol}: {str(e)}",
             )
         ]
 
 
+@mcp.tool(
+    name="ticker-option-chain",
+    description="Get most recent or around certain date option chain data. Parameters include call or put, and date. If no date, use most recent top 10 day forward dates"
+)
 async def _handle_ticker_option_chain(
-    arguments: dict | None,
+    symbol: Annotated[str, Field(description="Stock ticker symbol")],
+    option_type: Annotated[Literal["call", "put", "both"], Field(description="Type of options to retrieve")] = "both",
+    date: Annotated[str | None, Field(description="Specific expiration date in YYYY-MM-DD format. If not provided, uses most recent available dates")] = None
 ) -> list[types.TextContent]:
     """
     Handle ticker-option-chain tool execution.
     """
-    if not arguments or not arguments.get("symbol"):
-        raise ValueError("Symbol is required for option chain")
-
     try:
-        symbol = arguments["symbol"].upper()
-        option_type = arguments.get("option_type", "both")
-        date = arguments.get("date")
+        symbol = symbol.upper()
 
         options_data = await get_ticker_option_chain(symbol, option_type, date)
 
@@ -611,22 +323,25 @@ async def _handle_ticker_option_chain(
         return [
             types.TextContent(
                 type="text",
-                text=f"❌ Error retrieving option chain for {arguments.get('symbol', 'unknown')}: {str(e)}",
+                text=f"❌ Error retrieving option chain for {symbol}: {str(e)}",
             )
         ]
 
 
-async def _handle_ticker_earning(arguments: dict | None) -> list[types.TextContent]:
+@mcp.tool(
+    name="ticker-earning",
+    description="Get earnings data including annual or quarterly data, and upcoming earnings dates. Parameters include annual or quarter, and date. If no date, use most recent, also include the date of upcoming earning time if available"
+)
+async def _handle_ticker_earning(
+    symbol: Annotated[str, Field(description="Stock ticker symbol")],
+    period: Annotated[Literal["annual", "quarterly"], Field(description="Earnings period to retrieve")] = "annual",
+    date: Annotated[str | None, Field(description="Specific date in YYYY-MM-DD format. If not provided, uses most recent data")] = None
+) -> list[types.TextContent]:
     """
     Handle ticker-earning tool execution.
     """
-    if not arguments or not arguments.get("symbol"):
-        raise ValueError("Symbol is required for earnings data")
-
     try:
-        symbol = arguments["symbol"].upper()
-        period = arguments.get("period", "annual")
-        date = arguments.get("date")
+        symbol = symbol.upper()
 
         earnings_data = await get_ticker_earnings(symbol, period, date)
 
@@ -677,22 +392,22 @@ async def _handle_ticker_earning(arguments: dict | None) -> list[types.TextConte
         return [
             types.TextContent(
                 type="text",
-                text=f"❌ Error retrieving earnings for {arguments.get('symbol', 'unknown')}: {str(e)}",
+                text=f"❌ Error retrieving earnings for {symbol}: {str(e)}",
             )
         ]
 
-
-async def _handle_get_sec_filings(arguments: dict | None) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+@mcp.tool(
+    name="get-sec-filings",
+    description="Retrieve recent SEC filings for a stock symbol including 10-K, 10-Q, 8-K and other regulatory filings with document details and links"
+)
+async def _handle_get_sec_filings(
+    symbol: Annotated[str, Field(description="Stock ticker symbol to get SEC filings for")],
+    count: Annotated[int, Field(description="Number of SEC filings to fetch (default: 100)", ge=1)] = 100
+) -> list[types.TextContent]:
     """
     Handle get-sec-filings tool execution.
     """
-    if not arguments or not arguments.get("symbol"):
-        raise ValueError("Symbol is required for SEC filings retrieval")
-
     try:
-        symbol = arguments["symbol"].upper()
-        count = arguments.get("count", 10)
-
         filings_data = await get_ticker_filings(symbol, count)
 
         if filings_data.get("error"):
@@ -776,21 +491,21 @@ async def _handle_get_sec_filings(arguments: dict | None) -> list[types.TextCont
         return [
             types.TextContent(
                 type="text",
-                text=f"❌ Error retrieving SEC filings for {arguments.get('symbol', 'unknown')}: {str(e)}",
+                text=f"❌ Error retrieving SEC filings for {symbol}: {str(e)}",
             )
         ]
 
-
-async def _handle_get_filing_content(arguments: dict | None) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+@mcp.tool(
+    name="get-filing-content",
+    description="Download and retrieve the full content of a specific SEC filing document by URL"
+)
+async def _handle_get_filing_content(
+    url: Annotated[str, Field(description="URL of the SEC filing document to download (obtained from get-sec-filings tool)")]
+) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     """
     Handle get-filing-content tool execution.
     """
-    if not arguments or not arguments.get("url"):
-        raise ValueError("URL is required for filing content retrieval")
-
     try:
-        url = arguments["url"]
-        
         content_data = await get_filing_content(url)
         
         if content_data.get("error"):
@@ -850,7 +565,7 @@ async def _handle_get_filing_content(arguments: dict | None) -> list[types.TextC
         return [
             types.TextContent(
                 type="text",
-                text=f"❌ Error retrieving filing content for {arguments.get('url', 'unknown')}: {str(e)}",
+                text=f"❌ Error retrieving filing content for {url}: {str(e)}",
             )
         ]
 
@@ -866,108 +581,26 @@ async def main():
     )
     parser.add_argument(
         "--host",
-        default="localhost",
-        help="Host for HTTP server (default: localhost)"
+        default="127.0.0.1",
+        help="Host for HTTP server (default: 127.0.0.1)"
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=3000,
-        help="Port for HTTP server (default: 3000)"
+        default=8000,
+        help="Port for HTTP server (default: 8000)"
     )
     
     args = parser.parse_args()
-    
-    init_options = InitializationOptions(
-        server_name="yahoo-finance-server",
-        server_version="0.1.0",
-        capabilities=server.get_capabilities(
-            notification_options=NotificationOptions(),
-            experimental_capabilities={},
-        ),
-    )
     
     if args.transport == "http":
         print(f"Starting Yahoo Finance MCP Server with HTTP transport on http://{args.host}:{args.port}")
         print(f"Inspector URL: http://{args.host}:{args.port}")
         
         try:
-            # Use FastMCP for HTTP/StreamableHttp setup
-            from mcp.server.fastmcp import FastMCP
-            import uvicorn
-            
-            # Create FastMCP server with HTTP transport (replaces deprecated SSE)
-            fastmcp_server = FastMCP(
-                name="yahoo-finance-server",
-                host=args.host,
-                port=args.port,
-                # Use streamable_http instead of deprecated sse
-                streamable_http_path="/",
-                json_response=False  # Use MCP format instead of JSON
-            )
-            
-            # Register all our tools with FastMCP
-            @fastmcp_server.tool()
-            async def get_ticker_info(symbol: str) -> str:
-                """Get comprehensive stock information"""
-                from .helper import get_ticker_info as helper_get_ticker_info
-                return await helper_get_ticker_info(symbol)
-                
-            @fastmcp_server.tool()
-            async def get_ticker_news(symbol: str, count: int = 10) -> dict:
-                """Get recent news for a stock symbol"""
-                from .helper import get_ticker_news as helper_get_ticker_news
-                return await helper_get_ticker_news(symbol, count)
-                
-            @fastmcp_server.tool()
-            async def search(query: str, count: int = 10) -> dict:
-                """Search Yahoo Finance for stocks and instruments"""
-                from .helper import search_yahoo_finance
-                return await search_yahoo_finance(query, count)
-                
-            @fastmcp_server.tool()
-            async def get_top_entities(entity_type: str, sector: str = "", count: int = 10) -> dict:
-                """Get top entities in a sector"""
-                from .helper import get_top_entities as helper_get_top_entities
-                return await helper_get_top_entities(entity_type, sector, count)
-                
-            @fastmcp_server.tool()
-            async def get_price_history(symbol: str, period: str = "1y", interval: str = "1d") -> dict:
-                """Get historical price data"""
-                from .helper import get_price_history as helper_get_price_history
-                return await helper_get_price_history(symbol, period, interval)
-                
-            @fastmcp_server.tool()
-            async def ticker_option_chain(symbol: str, option_type: str = "both", date: str = None) -> dict:
-                """Get option chain data"""
-                from .helper import get_ticker_option_chain
-                return await get_ticker_option_chain(symbol, option_type, date)
-                
-            @fastmcp_server.tool()
-            async def ticker_earning(symbol: str, period: str = "annual", date: str = None) -> dict:
-                """Get earnings data"""
-                from .helper import get_ticker_earnings
-                return await get_ticker_earnings(symbol, period, date)
-                
-            @fastmcp_server.tool()
-            async def get_sec_filings(symbol: str, count: int = 100) -> dict:
-                """Get SEC filings for a stock symbol"""
-                from .helper import get_ticker_filings
-                return await get_ticker_filings(symbol, count)
-            
-            @fastmcp_server.tool()
-            async def get_filing_content(url: str) -> dict:
-                """Download and retrieve the full content of a specific SEC filing document by URL"""
-                from .helper import get_filing_content as helper_get_filing_content
-                return await helper_get_filing_content(url)
-            
-            # Get the ASGI app from FastMCP
-            app = fastmcp_server.streamable_http_app()
-            
-            # Run the server using async approach
-            config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
-            server_instance = uvicorn.Server(config)
-            await server_instance.serve()
+            mcp.settings.host = args.host
+            mcp.settings.port = args.port
+            await mcp.run_streamable_http_async()
             
         except ImportError as e:
             print(f"❌ HTTP transport dependencies not available: {e}")
@@ -977,5 +610,4 @@ async def main():
     else:
         print("Starting Yahoo Finance MCP Server with stdio transport")
         # Use stdio transport for MCP communication
-        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            await server.run(read_stream, write_stream, init_options)
+        await mcp.run_stdio_async()
