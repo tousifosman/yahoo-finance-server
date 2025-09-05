@@ -1220,6 +1220,83 @@ async def get_filing_content(url: str) -> Dict[str, Any]:
         }
 
 
+async def get_insider_transactions(symbol: str, count: int = 50) -> Dict[str, Any]:
+    """
+    Get insider transactions data for a stock symbol.
+
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL', 'GOOGL')
+        count: Number of transactions to return (default: 50)
+
+    Returns:
+        Dictionary containing insider transactions data
+    """
+    try:
+
+        def _get_insider_data():
+            ticker = _create_enhanced_ticker(symbol)
+
+            try:
+                # Get insider transactions using yfinance method
+                insider_data = ticker.insider_transactions
+                
+                if insider_data is None or insider_data.empty:
+                    logger.debug(f"No insider transactions found for {symbol}")
+                    return {
+                        "symbol": symbol,
+                        "transactions_count": 0,
+                        "transactions": [],
+                    }
+
+                # Process the insider transactions data
+                processed_transactions = []
+                
+                # Limit to requested count
+                transactions_limited = insider_data.head(count)
+                
+                for _, transaction in transactions_limited.iterrows():
+                    transaction_data = {
+                        "shares": int(transaction.get("Shares", 0)) if pd.notna(transaction.get("Shares")) else 0,
+                        "value": float(transaction.get("Value", 0)) if pd.notna(transaction.get("Value")) else 0,
+                        "url": transaction.get("URL", ""),
+                        "text": transaction.get("Text", ""),
+                        "insider": transaction.get("Insider", ""),
+                        "position": transaction.get("Position", ""),
+                        "transaction_date": (
+                            transaction.get("Transaction Start Date").strftime("%Y-%m-%d")
+                            if pd.notna(transaction.get("Transaction Start Date"))
+                            else ""
+                        ),
+                        "ownership": transaction.get("Ownership", ""),
+                    }
+                    processed_transactions.append(transaction_data)
+
+                return {
+                    "symbol": symbol,
+                    "transactions_count": len(processed_transactions),
+                    "transactions": processed_transactions,
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to get insider transactions for {symbol}: {e}")
+                return {
+                    "symbol": symbol,
+                    "error": f"Unable to fetch insider transactions: {str(e)}",
+                    "transactions_count": 0,
+                    "transactions": [],
+                }
+
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        insider_data = await loop.run_in_executor(None, _get_insider_data)
+
+        return insider_data
+
+    except Exception as e:
+        logger.error(f"Error getting insider transactions for {symbol}: {e}")
+        raise Exception(f"Failed to get insider transactions: {str(e)}")
+
+
 async def get_ticker_filings(symbol: str, count: int = 100) -> Dict[str, Any]:
     """
     Get SEC filings for a stock symbol using yfinance get_sec_filings method.

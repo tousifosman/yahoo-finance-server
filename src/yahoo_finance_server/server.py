@@ -18,6 +18,7 @@ from .helper import (
     get_ticker_earnings,
     get_ticker_filings,
     get_filing_content,
+    get_insider_transactions,
     Sectors
 )
 
@@ -393,6 +394,78 @@ async def _handle_ticker_earning(
             types.TextContent(
                 type="text",
                 text=f"❌ Error retrieving earnings for {symbol}: {str(e)}",
+            )
+        ]
+
+@mcp.tool(
+    name="get-insider-transactions",
+    description="Retrieve insider trading transactions for a stock symbol including details on purchases, sales, and stock grants by company insiders"
+)
+async def _handle_get_insider_transactions(
+    symbol: Annotated[str, Field(description="Stock ticker symbol to get insider transactions for")],
+    count: Annotated[int, Field(description="Number of insider transactions to fetch (default: 50, maximum: 100)", ge=1)] = 50
+) -> list[types.TextContent]:
+    """
+    Handle get-insider-transactions tool execution.
+    """
+    try:
+        symbol = symbol.upper()
+
+        insider_data = await get_insider_transactions(symbol, count)
+
+        if insider_data.get("error"):
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"❌ Error retrieving insider transactions: {insider_data['error']}",
+                )
+            ]
+
+        if not insider_data.get("transactions"):
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"📈 No insider transactions found for {symbol}",
+                )
+            ]
+
+        # Format the response nicely
+        insider_text = f"""📈 **Insider Transactions for {symbol}** ({insider_data['transactions_count']} transactions)
+
+"""
+
+        for i, transaction in enumerate(insider_data["transactions"], 1):
+            # Format shares and value
+            shares_str = f"{transaction['shares']:,}" if transaction['shares'] > 0 else "N/A"
+            value_str = f"${transaction['value']:,.2f}" if transaction['value'] > 0 else "N/A"
+            
+            # Format ownership type
+            ownership_desc = {
+                'D': 'Direct',
+                'I': 'Indirect', 
+                'B': 'Beneficial'
+            }.get(transaction['ownership'], transaction['ownership'])
+
+            insider_text += f"""**{i}. {transaction['insider']}**
+👤 **Position:** {transaction['position']}
+📅 **Date:** {transaction['transaction_date']}
+📊 **Shares:** {shares_str} | **Value:** {value_str} | **Ownership:** {ownership_desc}
+💬 **Details:** {transaction['text']}
+
+"""
+
+        return [
+            types.TextContent(
+                type="text",
+                text=insider_text,
+            )
+        ]
+
+    except Exception as e:
+        return [
+            types.TextContent(
+                type="text",
+                text=f"❌ Error retrieving insider transactions for {symbol}: {str(e)}",
             )
         ]
 
