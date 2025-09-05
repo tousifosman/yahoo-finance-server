@@ -19,6 +19,7 @@ from .helper import (
     get_ticker_filings,
     get_filing_content,
     get_insider_transactions,
+    get_institutional_holders,
     Sectors
 )
 
@@ -466,6 +467,74 @@ async def _handle_get_insider_transactions(
             types.TextContent(
                 type="text",
                 text=f"❌ Error retrieving insider transactions for {symbol}: {str(e)}",
+            )
+        ]
+
+@mcp.tool(
+    name="get-institutional-holders",
+    description="Retrieve institutional holders data for a stock symbol including major institutional investors, their holdings percentages, and recent changes"
+)
+async def _handle_get_institutional_holders(
+    symbol: Annotated[str, Field(description="Stock ticker symbol to get institutional holders for")],
+    count: Annotated[int, Field(description="Number of institutional holders to fetch (default: 10, maximum: 50)", ge=1, le=50)] = 10
+) -> list[types.TextContent]:
+    """
+    Handle get-institutional-holders tool execution.
+    """
+    try:
+        symbol = symbol.upper()
+
+        institutional_data = await get_institutional_holders(symbol, count)
+
+        if institutional_data.get("error"):
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"❌ Error retrieving institutional holders: {institutional_data['error']}",
+                )
+            ]
+
+        if not institutional_data.get("holders"):
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"🏢 No institutional holders found for {symbol}",
+                )
+            ]
+
+        # Format the response nicely
+        institutional_text = f"""🏢 **Institutional Holders for {symbol}** ({institutional_data['holders_count']} holders)
+
+"""
+
+        for i, holder in enumerate(institutional_data["holders"], 1):
+            # Format shares and value with commas
+            shares_str = f"{holder['shares']:,}" if holder['shares'] > 0 else "N/A"
+            value_str = f"${holder['value']:,}" if holder['value'] > 0 else "N/A"
+            
+            # Format percentage held and change
+            pct_held_str = f"{holder['pct_held']:.2%}" if holder['pct_held'] > 0 else "N/A"
+            pct_change_str = f"{holder['pct_change']:+.2%}" if holder['pct_change'] != 0 else "0.00%"
+
+            institutional_text += f"""**{i}. {holder['holder']}**
+📅 **Date Reported:** {holder['date_reported']}
+📊 **Shares Held:** {shares_str} | **Percentage:** {pct_held_str}
+💰 **Value:** {value_str} | **Change:** {pct_change_str}
+
+"""
+
+        return [
+            types.TextContent(
+                type="text",
+                text=institutional_text,
+            )
+        ]
+
+    except Exception as e:
+        return [
+            types.TextContent(
+                type="text",
+                text=f"❌ Error retrieving institutional holders for {symbol}: {str(e)}",
             )
         ]
 

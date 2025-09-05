@@ -1220,6 +1220,81 @@ async def get_filing_content(url: str) -> Dict[str, Any]:
         }
 
 
+async def get_institutional_holders(symbol: str, count: int = 10) -> Dict[str, Any]:
+    """
+    Get institutional holders data for a stock symbol.
+
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL', 'GOOGL')
+        count: Number of institutional holders to return (default: 10)
+
+    Returns:
+        Dictionary containing institutional holders data
+    """
+    try:
+
+        def _get_institutional_data():
+            ticker = _create_enhanced_ticker(symbol)
+
+            try:
+                # Get institutional holders using yfinance method
+                institutional_data = ticker.institutional_holders
+                
+                if institutional_data is None or institutional_data.empty:
+                    logger.debug(f"No institutional holders found for {symbol}")
+                    return {
+                        "symbol": symbol,
+                        "holders_count": 0,
+                        "holders": [],
+                    }
+
+                # Process the institutional holders data
+                processed_holders = []
+                
+                # Limit to requested count
+                holders_limited = institutional_data.head(count)
+                
+                for _, holder in holders_limited.iterrows():
+                    holder_data = {
+                        "date_reported": (
+                            holder.get("Date Reported").strftime("%Y-%m-%d")
+                            if pd.notna(holder.get("Date Reported"))
+                            else ""
+                        ),
+                        "holder": holder.get("Holder", ""),
+                        "pct_held": float(holder.get("pctHeld", 0)) if pd.notna(holder.get("pctHeld")) else 0,
+                        "shares": int(holder.get("Shares", 0)) if pd.notna(holder.get("Shares")) else 0,
+                        "value": int(holder.get("Value", 0)) if pd.notna(holder.get("Value")) else 0,
+                        "pct_change": float(holder.get("pctChange", 0)) if pd.notna(holder.get("pctChange")) else 0,
+                    }
+                    processed_holders.append(holder_data)
+
+                return {
+                    "symbol": symbol,
+                    "holders_count": len(processed_holders),
+                    "holders": processed_holders,
+                }
+
+            except Exception as e:
+                logger.error(f"Failed to get institutional holders for {symbol}: {e}")
+                return {
+                    "symbol": symbol,
+                    "error": f"Unable to fetch institutional holders: {str(e)}",
+                    "holders_count": 0,
+                    "holders": [],
+                }
+
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        institutional_data = await loop.run_in_executor(None, _get_institutional_data)
+
+        return institutional_data
+
+    except Exception as e:
+        logger.error(f"Error getting institutional holders for {symbol}: {e}")
+        raise Exception(f"Failed to get institutional holders: {str(e)}")
+
+
 async def get_insider_transactions(symbol: str, count: int = 50) -> Dict[str, Any]:
     """
     Get insider transactions data for a stock symbol.
